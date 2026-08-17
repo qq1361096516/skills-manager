@@ -1019,6 +1019,11 @@ pub fn run() {
             commands::sync::unsync_skill_from_tool,
             commands::sync::get_skill_tool_toggles,
             commands::sync::set_skill_tool_toggle,
+            // Remote skills over system SSH
+            commands::remote::remote_skill_status,
+            commands::remote::remote_skill_sync,
+            commands::remote::remote_agent_directories,
+            commands::remote::ssh_config_hosts,
             // Scan
             commands::scan::scan_local_skills,
             commands::scan::import_existing_skill,

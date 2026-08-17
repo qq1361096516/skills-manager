@@ -183,6 +183,70 @@ export interface ProjectSkillDocument {
   content: string;
 }
 
+export interface RemoteSkillComparison {
+  name: string;
+  state: "equal" | "local_only" | "remote_only" | "different";
+  local_hash: string | null;
+  remote_hash: string | null;
+}
+
+export interface RemoteAgentDirectory {
+  key: string;
+  display_name: string;
+  path: string;
+  skill_count: number;
+}
+
+export interface SshConfigHost {
+  alias: string;
+  hostname: string | null;
+  user: string | null;
+  port: string | null;
+  proxy_jump: string | null;
+}
+
+export interface RemoteStatusReport {
+  ssh: {
+    alias: string;
+    hostname: string | null;
+    user: string | null;
+    port: string | null;
+    proxy_jump: string | null;
+  };
+  local_dir: string;
+  remote_dir: string;
+  skills: RemoteSkillComparison[];
+}
+
+export interface RemoteSyncReport {
+  direction: "pull" | "push";
+  applied: boolean;
+  force: boolean;
+  local_dir: string;
+  remote_dir: string;
+  items: Array<{
+    name: string;
+    action: string;
+    result: "applied" | "conflict";
+    backup_path?: string;
+  }>;
+}
+
+export const remoteSkillStatus = (host: string, remoteDir: string) =>
+  invoke<RemoteStatusReport>("remote_skill_status", { host, remoteDir });
+
+export const remoteAgentDirectories = (host: string) =>
+  invoke<RemoteAgentDirectory[]>("remote_agent_directories", { host });
+
+export const sshConfigHosts = () => invoke<SshConfigHost[]>("ssh_config_hosts");
+
+export const remoteSkillSync = (
+  direction: "pull" | "push",
+  host: string,
+  remoteDir: string,
+  force: boolean,
+) => invoke<RemoteSyncReport>("remote_skill_sync", { direction, host, remoteDir, force });
+
 // ── Tools ──
 
 export const getToolStatus = () => invoke<ToolInfo[]>("get_tool_status");

@@ -21,6 +21,7 @@ pub mod path_guard;
 pub mod project_scanner;
 pub mod removals;
 pub mod repo_lock;
+pub mod remote_sync;
 pub mod scanner;
 pub mod scenario_service;
 pub mod skill_auto_updater;

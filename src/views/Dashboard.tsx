@@ -1,13 +1,75 @@
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Layers, CheckCircle2, Bot, Plus, Download, AlertTriangle } from "lucide-react";
+import { Layers, CheckCircle2, Bot, Plus, Download, AlertTriangle, Loader2, RefreshCw, Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useApp } from "../context/AppContext";
+import { AgentIcon } from "../components/AgentIcon";
+import { getErrorMessage } from "../lib/error";
+import { getFollowedRemoteDirectories, parseRemoteProfiles } from "../lib/remoteProfiles";
+import * as api from "../lib/tauri";
+
+interface RemoteDirectoryStatus {
+  id: string;
+  profileName: string;
+  host: string;
+  path: string;
+  agentKey?: string;
+  displayName?: string;
+  localOnly: number;
+  remoteOnly: number;
+  conflicts: number;
+  error?: string;
+}
 
 export function Dashboard() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { tools, projects, managedSkills, openSkillDetailById } = useApp();
+  const [remoteStatuses, setRemoteStatuses] = useState<RemoteDirectoryStatus[]>([]);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+
+  const refreshRemoteStatuses = useCallback(async () => {
+    setRemoteLoading(true);
+    try {
+      const profiles = parseRemoteProfiles(await api.getSettings("remote_sync_profiles"));
+      const directories = profiles
+        .filter((profile) => profile.host.trim())
+        .flatMap((profile) => getFollowedRemoteDirectories(profile).map((directory) => ({
+          id: `${profile.id}:${directory.path}`,
+          profileName: profile.name,
+          host: profile.host.trim(),
+          path: directory.path,
+          agentKey: directory.agentKey,
+          displayName: directory.displayName,
+          localOnly: 0,
+          remoteOnly: 0,
+          conflicts: 0,
+        })));
+      setRemoteStatuses(directories);
+      const checked = await Promise.all(directories.map(async (directory): Promise<RemoteDirectoryStatus> => {
+        try {
+          const report = await api.remoteSkillStatus(directory.host, directory.path);
+          return {
+            ...directory,
+            localOnly: report.skills.filter((skill) => skill.state === "local_only").length,
+            remoteOnly: report.skills.filter((skill) => skill.state === "remote_only").length,
+            conflicts: report.skills.filter((skill) => skill.state === "different").length,
+          };
+        } catch (error) {
+          return { ...directory, error: getErrorMessage(error, t("dashboard.remoteConnectionFailed")) };
+        }
+      }));
+      setRemoteStatuses(checked);
+    } catch {
+      setRemoteStatuses([]);
+    } finally {
+      setRemoteLoading(false);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    void refreshRemoteStatuses();
+  }, [refreshRemoteStatuses]);
 
   const enabledAgents = useMemo(
     () => tools.filter((tool) => tool.installed && tool.enabled),
@@ -110,6 +172,64 @@ export function Dashboard() {
           {t("dashboard.installNew")}
         </button>
       </div>
+
+      <section>
+        <div className="mb-2.5 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="app-section-title">{t("dashboard.remoteSkills")}</h2>
+            <p className="mt-0.5 text-[11px] text-muted">{t("dashboard.remoteSkillsHint", { count: remoteStatuses.length })}</p>
+          </div>
+          <button
+            type="button"
+            onClick={refreshRemoteStatuses}
+            disabled={remoteLoading}
+            className="rounded-md border border-border p-1.5 text-muted outline-none transition-colors hover:bg-surface-hover hover:text-secondary focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+            title={t("dashboard.refreshRemote")}
+          >
+            {remoteLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+        <div className="app-panel overflow-hidden divide-y divide-border-subtle">
+          {remoteStatuses.length === 0 ? (
+            <button type="button" onClick={() => navigate("/remote-ssh")} className="flex w-full items-center justify-center gap-2 px-4 py-6 text-[12px] text-muted transition-colors hover:bg-surface-hover hover:text-secondary">
+              {remoteLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Server className="h-4 w-4" />}
+              {remoteLoading ? t("dashboard.remoteChecking") : t("dashboard.remoteEmpty")}
+            </button>
+          ) : remoteStatuses.map((status) => {
+            const inSync = !status.error && status.localOnly === 0 && status.remoteOnly === 0 && status.conflicts === 0;
+            return (
+              <div key={status.id} className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  {status.agentKey ? (
+                    <AgentIcon agentKey={status.agentKey} displayName={status.displayName ?? status.profileName} className="h-6 w-6 shrink-0" />
+                  ) : (
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent-bg text-accent-light"><Server className="h-3.5 w-3.5" /></span>
+                  )}
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] font-medium text-secondary">{status.profileName}{status.displayName ? ` · ${status.displayName}` : ""}</p>
+                    <p className="truncate font-mono text-[11px] text-muted" title={`${status.host}:${status.path}`}>{status.host}:{status.path}</p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  {remoteLoading ? (
+                    <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">{t("dashboard.remoteChecking")}</span>
+                  ) : status.error ? (
+                    <span title={status.error} className="rounded-full bg-red-500/10 px-2 py-0.5 text-[11px] text-red-600 dark:text-red-300">{t("dashboard.remoteConnectionFailed")}</span>
+                  ) : inSync ? (
+                    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">{t("dashboard.remoteInSync")}</span>
+                  ) : (
+                    <>
+                      {status.localOnly > 0 && <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-700 dark:text-blue-300">{t("dashboard.remoteLocalOnly", { count: status.localOnly })}</span>}
+                      {status.remoteOnly > 0 && <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-300">{t("dashboard.remoteRemoteOnly", { count: status.remoteOnly })}</span>}
+                      {status.conflicts > 0 && <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-700 dark:text-amber-300">{t("dashboard.remoteConflicts", { count: status.conflicts })}</span>}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       {/* Recent skills */}
       {recentSkills.length > 0 && (

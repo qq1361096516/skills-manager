@@ -6,7 +6,7 @@ use anyhow::{Context, anyhow, bail};
 use app_lib::commands::{presets as preset_cmd, skills as cmd, tools as tool_cmd};
 use app_lib::core::{
     app_state, audit_log::AuditDraft, central_repo, error::AppError, git_backup, git_fetcher,
-    installer, merge, repo_lock::RepoLock, scenario_service, skill_metadata,
+    installer, merge, remote_sync, repo_lock::RepoLock, scenario_service, skill_metadata,
     skill_store::SkillStore, skillssh_api, sync_engine, sync_metadata, tool_adapters, tool_service,
 };
 use clap::{Args, Parser, Subcommand};
@@ -32,6 +32,7 @@ enum Commands {
     Skills(SkillsArgs),
     #[command(alias = "scenarios")]
     Presets(PresetArgs),
+    Remote(RemoteArgs),
     Git(GitArgs),
 }
 
@@ -378,6 +379,56 @@ enum GitCommand {
     PruneSyncRefs,
 }
 
+#[derive(Args, Debug)]
+struct RemoteArgs {
+    #[command(subcommand)]
+    command: RemoteCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum RemoteCommand {
+    /// Show the effective settings resolved from ~/.ssh/config.
+    Resolve { host: String },
+    /// Compare local and remote skills without changing either side.
+    Status {
+        host: String,
+        #[arg(long, default_value = "~/.codex/skills")]
+        remote_dir: String,
+        #[arg(long)]
+        local_dir: Option<PathBuf>,
+    },
+    /// Preview a remote-to-local sync; pass --apply to write changes.
+    Pull {
+        host: String,
+        #[arg(long, default_value = "~/.codex/skills")]
+        remote_dir: String,
+        #[arg(long)]
+        local_dir: Option<PathBuf>,
+        #[arg(long)]
+        skill: Option<String>,
+        #[arg(long)]
+        apply: bool,
+        /// Back up and replace differing local skills.
+        #[arg(long, requires = "apply")]
+        force: bool,
+    },
+    /// Preview a local-to-remote sync; pass --apply to write changes.
+    Push {
+        host: String,
+        #[arg(long, default_value = "~/.codex/skills")]
+        remote_dir: String,
+        #[arg(long)]
+        local_dir: Option<PathBuf>,
+        #[arg(long)]
+        skill: Option<String>,
+        #[arg(long)]
+        apply: bool,
+        /// Back up and replace differing remote skills.
+        #[arg(long, requires = "apply")]
+        force: bool,
+    },
+}
+
 #[derive(Debug, Serialize)]
 struct RepoStatus {
     base_dir: String,
@@ -707,8 +758,72 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Tools(args) => run_tools(args, &store, cli.json),
         Commands::Skills(args) => run_skills(args, &store, cli.json),
         Commands::Presets(args) => run_presets(args, &store, cli.json),
+        Commands::Remote(args) => run_remote(args, cli.json),
         Commands::Git(args) => run_git(args, &store, cli.skills_root.is_some(), cli.json),
     }
+}
+
+// ── remote ────────────────────────────────────────────────────────────────
+
+fn run_remote(args: RemoteArgs, json: bool) -> anyhow::Result<()> {
+    match args.command {
+        RemoteCommand::Resolve { host } => {
+            print_json(&remote_sync::resolve_ssh_config(&host)?, json)
+        }
+        RemoteCommand::Status {
+            host,
+            remote_dir,
+            local_dir,
+        } => {
+            let local_dir = local_dir.unwrap_or_else(central_repo::skills_dir);
+            print_json(&remote_sync::status(&host, &remote_dir, &local_dir)?, json)
+        }
+        RemoteCommand::Pull {
+            host,
+            remote_dir,
+            local_dir,
+            skill,
+            apply,
+            force,
+        } => {
+            let local_dir = local_dir.unwrap_or_else(central_repo::skills_dir);
+            print_json(
+                &remote_sync::sync(
+                    remote_sync::SyncDirection::Pull,
+                    &host,
+                    &remote_dir,
+                    &local_dir,
+                    skill.as_deref(),
+                    apply,
+                    force,
+                )?,
+                json,
+            )
+        }
+        RemoteCommand::Push {
+            host,
+            remote_dir,
+            local_dir,
+            skill,
+            apply,
+            force,
+        } => {
+            let local_dir = local_dir.unwrap_or_else(central_repo::skills_dir);
+            print_json(
+                &remote_sync::sync(
+                    remote_sync::SyncDirection::Push,
+                    &host,
+                    &remote_dir,
+                    &local_dir,
+                    skill.as_deref(),
+                    apply,
+                    force,
+                )?,
+                json,
+            )
+        }
+    }
+    Ok(())
 }
 
 // ── repo ──────────────────────────────────────────────────────────────────
